@@ -24,3 +24,17 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = "2.28"        # PulseAudio bindings
+libpulse-simple-binding = "2.28"
+x11 = { version = "2.21", features = ["xlib"] }  # Window titles
+procfs = "0.16"                  # Process info from /proc
+nix = { version = "0.27", features = ["process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs = "0.11"           # Core Audio framework
+core-foundation = "0.9"         # CF types
+cocoa = "0.25"                  # Cocoa/AppKit bindings
+objc = "0.2"                    # Objective-C bridge
+libc = "0.2"                    # System calls

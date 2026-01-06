@@ -46,7 +46,7 @@ impl AudioOutputMonitor {
 
     /// Build complete JSON status report
     pub fn build_status_report(&mut self) -> std::result::Result<AudioOutputReport, Box<dyn Error>> {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         {
             let output_info = self.get_output_info();
             let active_apps = self.get_active_apps();
@@ -59,31 +59,31 @@ impl AudioOutputMonitor {
             })
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
-            Err("Audio output monitoring is only supported on Windows".into())
+            Err("Audio output monitoring is only supported on Windows, Linux, and macOS".into())
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     fn get_output_info(&mut self) -> AudioOutputInfo {
-        use crate::wasapi_audio::wasapi;
+        use crate::audio::platform;
 
         // Get default audio output device info
-        let (device_name, volume_level, is_muted) = match wasapi::get_audio_output_volume_and_mute() {
+        let (device_name, volume_level, is_muted) = match platform::get_audio_output_volume_and_mute() {
             Ok(audio_info) => {
-                let name = wasapi::get_audio_output_device_name()
+                let name = platform::get_audio_output_device_name()
                     .unwrap_or_else(|_| "Default Speakers".to_string());
                 (name, audio_info.volume, audio_info.is_muted)
             }
             Err(e) => {
-                self.errors.push(format!("WASAPI output error: {}", e));
+                self.errors.push(format!("Audio output error: {}", e));
                 ("Default Speakers".to_string(), 50.0, false)
             }
         };
 
         // Get peak level (current audio level)
-        let peak_level = match wasapi::get_audio_output_peak_level() {
+        let peak_level = match platform::get_audio_output_peak_level() {
             Ok(level) => level,
             Err(e) => {
                 self.errors.push(format!("Failed to get peak level: {}", e));
@@ -102,11 +102,11 @@ impl AudioOutputMonitor {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     fn get_active_apps(&mut self) -> Vec<AudioAppInfo> {
-        use crate::wasapi_audio::wasapi;
+        use crate::audio::platform;
 
-        match wasapi::get_apps_playing_audio() {
+        match platform::get_apps_playing_audio() {
             Ok(apps) => apps.into_iter().map(|app| {
                 AudioAppInfo {
                     name: app.name,

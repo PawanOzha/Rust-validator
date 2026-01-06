@@ -44,10 +44,20 @@ impl NetworkMonitor {
     }
 
     /// Get WebRTC signals for active connections
-    /// This is a simplified implementation that uses Windows netstat
+    /// This is a simplified implementation that uses platform-specific commands
     /// For production, you'd use pcap, but this works without driver installation
     pub fn get_webrtc_signals(&mut self) -> Vec<WebRTCSignal> {
         #[cfg(target_os = "windows")]
+        {
+            self.scan_network_connections();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.scan_network_connections();
+        }
+
+        #[cfg(target_os = "macos")]
         {
             self.scan_network_connections();
         }
@@ -102,6 +112,118 @@ impl NetworkMonitor {
                     if self.is_webrtc_port(local_addr) {
                         self.update_or_create_signal(pid);
                     }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn scan_network_connections(&mut self) {
+        use std::process::Command;
+
+        // Use 'ss' command (modern replacement for netstat)
+        // Format: ss -uapn (UDP, all, process, numeric)
+        let output = match Command::new("ss")
+            .args(&["-uapn"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => {
+                // Fallback to netstat if ss is not available
+                match Command::new("netstat")
+                    .args(&["-anup"])
+                    .output()
+                {
+                    Ok(output) => output,
+                    Err(_) => return,
+                }
+            }
+        };
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+
+        for line in output_str.lines().skip(1) {
+            self.parse_ss_line(line);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parse_ss_line(&mut self, line: &str) {
+        // ss output format: State  Recv-Q Send-Q  Local Address:Port  Peer Address:Port  Process
+        // Example: UNCONN 0  0  0.0.0.0:12345  0.0.0.0:*  users:(("chrome",pid=1234,fd=56))
+
+        if !line.contains("users:") {
+            return;
+        }
+
+        // Extract local address
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            return;
+        }
+
+        let local_addr = parts[4];
+
+        // Check if this is a WebRTC port
+        if !self.is_webrtc_port(local_addr) {
+            return;
+        }
+
+        // Extract PID from users:((processname,pid=1234,fd=56))
+        if let Some(users_part) = line.split("users:").nth(1) {
+            if let Some(pid_part) = users_part.split("pid=").nth(1) {
+                if let Some(pid_str) = pid_part.split(',').next() {
+                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                        if pid > 0 {
+                            self.update_or_create_signal(pid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn scan_network_connections(&mut self) {
+        use std::process::Command;
+
+        // Use lsof to get UDP connections with process information
+        let output = match Command::new("lsof")
+            .args(&["-i", "UDP", "-n", "-P"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return,
+        };
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+
+        for line in output_str.lines().skip(1) {
+            self.parse_lsof_line(line);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn parse_lsof_line(&mut self, line: &str) {
+        // lsof output format: COMMAND  PID  USER  FD  TYPE  DEVICE  SIZE/OFF  NODE  NAME
+        // Example: chrome  1234  user  56u  IPv4  0x123456  0t0  UDP *:12345
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 9 {
+            return;
+        }
+
+        // Get PID (second column)
+        if let Ok(pid) = parts[1].parse::<u32>() {
+            if pid == 0 {
+                return;
+            }
+
+            // Get the connection info (last column typically contains address:port)
+            if let Some(addr_info) = parts.last() {
+                // Check if this is a WebRTC-related port
+                if self.is_webrtc_port(addr_info) {
+                    self.update_or_create_signal(pid);
                 }
             }
         }
@@ -181,7 +303,29 @@ fn get_process_name_from_pid(pid: u32) -> String {
     format!("Process_{}", pid)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn get_process_name_from_pid(pid: u32) -> String {
+    use crate::platform::PlatformUtils;
+
+    // Use platform utilities to get process name
+    match <() as PlatformUtils>::get_process_name(pid) {
+        Ok(name) => name,
+        Err(_) => format!("Process_{}", pid),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_process_name_from_pid(pid: u32) -> String {
+    use crate::platform::PlatformUtils;
+
+    // Use platform utilities to get process name
+    match <() as PlatformUtils>::get_process_name(pid) {
+        Ok(name) => name,
+        Err(_) => format!("Process_{}", pid),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn get_process_name_from_pid(_pid: u32) -> String {
     String::from("Unknown")
 }
