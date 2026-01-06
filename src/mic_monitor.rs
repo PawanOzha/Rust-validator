@@ -61,20 +61,34 @@ impl MicMonitor {
 
     /// Build complete JSON status report
     pub fn build_status_report(&mut self) -> std::result::Result<MicStatusReport, Box<dyn Error>> {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         {
-            // Get mic info (WASAPI only - fast and reliable)
+            // Get mic info from platform audio backend
             let mic_info = self.get_mic_info();
             let conflicts = self.get_conflicts_info();
 
-            // Skip PowerShell-based checks for now to avoid timeouts
             let permissions = PermissionsInfo {
                 global: true,
                 app_access: std::collections::HashMap::new(),
             };
 
+            #[cfg(target_os = "windows")]
             let driver_info = DriverInfo {
                 name: "Windows Audio".to_string(),
+                version: "Built-in".to_string(),
+                status: "OK".to_string(),
+            };
+
+            #[cfg(target_os = "linux")]
+            let driver_info = DriverInfo {
+                name: "PulseAudio".to_string(),
+                version: "Built-in".to_string(),
+                status: "OK".to_string(),
+            };
+
+            #[cfg(target_os = "macos")]
+            let driver_info = DriverInfo {
+                name: "Core Audio".to_string(),
                 version: "Built-in".to_string(),
                 status: "OK".to_string(),
             };
@@ -89,32 +103,32 @@ impl MicMonitor {
             })
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
-            Err("Microphone monitoring is only supported on Windows".into())
+            Err("Microphone monitoring is only supported on Windows, Linux, and macOS".into())
         }
     }
 
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     fn get_mic_info(&mut self) -> MicInfo {
-        // Use WASAPI to get REAL microphone data
-        use crate::wasapi_audio::wasapi;
+        // Use platform audio backend to get REAL microphone data
+        use crate::audio::platform;
 
-        let (device_name, volume_level, is_muted) = match wasapi::get_microphone_volume_and_mute() {
+        let (device_name, volume_level, is_muted) = match platform::get_microphone_volume_and_mute() {
             Ok(audio_info) => {
-                let name = wasapi::get_microphone_device_name()
+                let name = platform::get_microphone_device_name()
                     .unwrap_or_else(|_| "Default Microphone".to_string());
                 (name, audio_info.volume, audio_info.is_muted)
             }
             Err(e) => {
-                self.errors.push(format!("WASAPI error: {}", e));
+                self.errors.push(format!("Audio backend error: {}", e));
                 ("Default Microphone".to_string(), 50.0, false)
             }
         };
 
-        // Get REAL apps using microphone via WASAPI Audio Sessions
-        let apps_using_mic = match wasapi::get_apps_using_microphone() {
+        // Get REAL apps using microphone via audio backend
+        let apps_using_mic = match platform::get_apps_using_microphone() {
             Ok(apps) => apps,
             Err(e) => {
                 self.errors.push(format!("Failed to get mic apps: {}", e));
@@ -152,12 +166,12 @@ impl MicMonitor {
     }
 
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     fn get_conflicts_info(&mut self) -> ConflictsInfo {
-        use crate::wasapi_audio::wasapi;
+        use crate::audio::platform;
 
-        // Get REAL apps using microphone via WASAPI
-        let apps_using_mic = match wasapi::get_apps_using_microphone() {
+        // Get REAL apps using microphone via audio backend
+        let apps_using_mic = match platform::get_apps_using_microphone() {
             Ok(apps) => apps,
             Err(e) => {
                 self.errors.push(format!("Failed to enumerate mic sessions: {}", e));

@@ -2,6 +2,10 @@ mod mic_monitor;
 mod audio_output_monitor;
 mod network_monitor;
 mod correlation_engine;
+mod audio;      // New platform-agnostic audio module
+mod platform;   // New platform-specific utilities module
+
+// Keep old wasapi_audio for backward compatibility during transition
 #[cfg(target_os = "windows")]
 mod wasapi_audio;
 
