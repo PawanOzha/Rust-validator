@@ -25,7 +25,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AudioSource {
     name: String,
-    process_id: u32,
+    process_id: u32,        
     window_title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     detected_app: Option<String>,

@@ -4,6 +4,7 @@ use super::PlatformUtils;
 use procfs::process::Process;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_ulong};
+use std::process::Command;
 
 // Implement PlatformUtils trait for Linux
 impl PlatformUtils for () {
@@ -27,16 +28,149 @@ fn get_process_name_impl(pid: u32) -> std::result::Result<String, Box<dyn std::e
     Ok(stat.comm)
 }
 
-/// Get window title for a process using X11
-/// Falls back to process name if X11 is not available or window not found
+/// Get window title for a process using X11, Wayland, or fallbacks
+/// Tries multiple methods to ensure window titles are found
 fn get_window_title_impl(pid: u32) -> std::result::Result<String, Box<dyn std::error::Error>> {
-    // Try X11 window title first
+    // Method 1: Try X11 window title first
     if let Ok(title) = get_window_title_x11(pid) {
-        return Ok(title);
+        if !title.is_empty() && title != "Window not found for PID" {
+            return Ok(title);
+        }
+    }
+
+    // Method 2: Try Wayland via /proc/pid/environ and desktop files
+    if let Ok(title) = get_window_title_wayland(pid) {
+        if !title.is_empty() {
+            return Ok(title);
+        }
+    }
+
+    // Method 3: Try wmctrl (works on both X11 and some Wayland compositors)
+    if let Ok(title) = get_window_title_wmctrl(pid) {
+        if !title.is_empty() {
+            return Ok(title);
+        }
+    }
+
+    // Method 4: Try reading from /proc/pid/cmdline for app identification
+    if let Ok(title) = get_title_from_cmdline(pid) {
+        if !title.is_empty() {
+            return Ok(title);
+        }
     }
 
     // Fallback to process name
     get_process_name_impl(pid)
+}
+
+/// Get window title on Wayland using proc and environment
+fn get_window_title_wayland(pid: u32) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    use std::fs;
+
+    // Read environment variables to detect the display protocol
+    let environ_path = format!("/proc/{}/environ", pid);
+    if let Ok(environ_data) = fs::read(&environ_path) {
+        let environ_str = String::from_utf8_lossy(&environ_data);
+
+        // Check if running under Wayland
+        if environ_str.contains("WAYLAND_DISPLAY") {
+            // Try to extract GDK_BACKEND or other app identifiers
+            for entry in environ_str.split('\0') {
+                if entry.starts_with("GDK_BACKEND") || entry.starts_with("WAYLAND_DISPLAY") {
+                    // Detected Wayland, now try to get app name via cmdline
+                    return get_title_from_cmdline(pid);
+                }
+            }
+        }
+    }
+
+    Err("Not running under Wayland or info unavailable".into())
+}
+
+/// Get window title using wmctrl command
+fn get_window_title_wmctrl(pid: u32) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("wmctrl")
+        .args(&["-l", "-p"])
+        .output();
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let wmctrl_str = String::from_utf8_lossy(&output.stdout);
+
+            for line in wmctrl_str.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // wmctrl format: window_id desktop pid machine window_title
+                if parts.len() >= 5 {
+                    if let Ok(window_pid) = parts[2].parse::<u32>() {
+                        if window_pid == pid {
+                            // Join remaining parts as window title
+                            let title = parts[4..].join(" ");
+                            return Ok(title);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err("wmctrl not available or window not found".into())
+}
+
+/// Extract meaningful title from command line arguments
+fn get_title_from_cmdline(pid: u32) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    use std::fs;
+
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    if let Ok(cmdline_data) = fs::read(&cmdline_path) {
+        let cmdline = String::from_utf8_lossy(&cmdline_data);
+        let args: Vec<&str> = cmdline.split('\0').filter(|s| !s.is_empty()).collect();
+
+        if !args.is_empty() {
+            // Look for recognizable patterns
+            for arg in &args {
+                // Check for URLs (meeting links)
+                if arg.contains("meet.google.com") || arg.contains("teams.microsoft.com") || arg.contains("zoom.us") {
+                    return Ok(format!("Meeting: {}", extract_domain(arg)));
+                }
+
+                // Check for app names
+                if arg.contains("--app=") {
+                    if let Some(app_name) = arg.split("--app=").nth(1) {
+                        return Ok(app_name.to_string());
+                    }
+                }
+
+                // Check for titles
+                if arg.contains("--title=") || arg.contains("--name=") {
+                    if let Some(title) = arg.split('=').nth(1) {
+                        return Ok(title.to_string());
+                    }
+                }
+            }
+
+            // Return the executable name if nothing else found
+            if let Some(exe) = args.first() {
+                if let Some(basename) = exe.split('/').last() {
+                    return Ok(basename.to_string());
+                }
+            }
+        }
+    }
+
+    Err("Could not extract title from cmdline".into())
+}
+
+/// Extract domain from URL
+fn extract_domain(url: &str) -> String {
+    if let Some(domain_start) = url.find("://") {
+        let after_protocol = &url[domain_start + 3..];
+        if let Some(slash_pos) = after_protocol.find('/') {
+            return after_protocol[..slash_pos].to_string();
+        }
+        return after_protocol.to_string();
+    }
+
+    url.to_string()
 }
 
 /// Get window title using X11
